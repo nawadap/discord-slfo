@@ -31,6 +31,7 @@ from db import (
     list_links,
     list_profiles,
     get_guild_settings,
+    save_leaderboard,
 )
 
 app = FastAPI(title="SLFO API")
@@ -386,6 +387,35 @@ async def admin_announce(body: AdminAnnounceBody, x_admin_token: str = Header(de
         # r.text peut être long
         raise HTTPException(status_code=502, detail=f"Roblox publish failed: {r.status_code} {r.text[:600]}")
 
+    return {"ok": True}
+
+class LeaderboardEntry(BaseModel):
+    user_id: int
+    username: str
+    value: int
+
+class LeaderboardUpdateBody(BaseModel):
+    key: str  # "points" | "kills" | "robux"
+    entries: List[LeaderboardEntry]
+
+@app.post("/leaderboard/update")
+async def leaderboard_update(body: LeaderboardUpdateBody, x_api_key: str = Header(default="")):
+    _check_key(x_api_key)
+
+    key = (body.key or "").strip().lower()
+    if key not in ("points", "kills", "robux"):
+        raise HTTPException(status_code=400, detail="Invalid leaderboard key")
+
+    # garde uniquement top 10, valeurs >= 0
+    cleaned = []
+    for e in (body.entries or [])[:10]:
+        cleaned.append({
+            "user_id": int(e.user_id),
+            "username": str(e.username)[:50],
+            "value": max(0, int(e.value)),
+        })
+
+    await save_leaderboard(key, json.dumps(cleaned, ensure_ascii=False))
     return {"ok": True}
 
 # =========================
