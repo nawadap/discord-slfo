@@ -154,22 +154,32 @@ class SwordInventoryView(discord.ui.View):
         await interaction.response.edit_message(view=self)
 
 class LeaderboardView(discord.ui.View):
-    def __init__(self, key: str, make_embed_fn):
+    def __init__(self, owner_id: int, key: str, make_embed_fn):
         super().__init__(timeout=180)
+        self.owner_id = owner_id
         self.key = key
         self.make_embed_fn = make_embed_fn
         self._update_buttons()
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ Only the command author can use these buttons.",
+                ephemeral=True
+            )
+            return False
+        return True
+
     def _update_buttons(self):
-        # disable button for active key
         self.btn_points.disabled = self.key == "points"
         self.btn_kills.disabled = self.key == "kills"
         self.btn_robux.disabled = self.key == "robux"
 
-    async def _set(self, interaction: discord.Interaction, key: str):
+    async def _set(self, interaction, key: str):
         self.key = key
-        self._refresh()
-        await interaction.response.edit_message(embed=await self.make_embed_fn(self.key), view=self)
+        self._update_buttons()
+        embed = await self.make_embed_fn(key)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Points", style=discord.ButtonStyle.secondary)
     async def btn_points(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -361,7 +371,7 @@ def setup_commands(tree: app_commands.CommandTree):
             e.set_footer(text=f"Updated {updated_ago}s ago • SLFO — Leaderboard")
             return e
 
-        view = LeaderboardView("points", make_embed)
+        view = LeaderboardView(interaction.user.id, "points", make_embed)
         await interaction.response.send_message(embed=await make_embed("points"), view=view, ephemeral=False)
 
     @tree.command(name="guild_config_set", description="(Official) Configure roles/channels for a target guild")
