@@ -30,6 +30,8 @@ EMBED_COLOR = 0x0B2E1A  # SLFO dark forest green
 
 
 # ==================== Utils ====================
+def format_number(n: int) -> str:
+    return f"{int(n):,}".replace(",", " ")
 
 def make_code(length=8):
     return "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(length))
@@ -365,7 +367,7 @@ def setup_commands(tree: app_commands.CommandTree):
             for i, entry in enumerate(lb["data"][:10], start=1):
                 username = entry.get("username", "Unknown")
                 value = int(entry.get("value", 0))
-                lines.append(f"**#{i}** {username} — **{value} {suffix_map[key]}**")
+                lines.append(f"**#{i}** {username} — **{format_number(value)} {suffix_map[key]}**")
 
             e.description = "\n".join(lines)
             e.set_footer(text=f"Updated {updated_ago}s ago • SLFO — Leaderboard")
