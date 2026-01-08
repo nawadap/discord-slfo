@@ -3,7 +3,8 @@ import string
 import time
 import discord
 from discord import app_commands
-
+import os
+import httpx
 from config import GUILD_ID, LINKED_ROLE_ID, CODE_TTL_SECONDS, ADMIN_LOG_CHANNEL_ID
 from db import (
     store_code,
@@ -287,3 +288,33 @@ def setup_commands(tree: app_commands.CommandTree):
         _, roblox_id, name, _ = link
         action_id = await enqueue_admin_action(roblox_id, "HAND_REMOVE", amount)
         await interaction.response.send_message(f"✅ HAND_REMOVE {amount} queued for {name} (#{action_id})", ephemeral=True)
+
+    @tree.command(name="admin_announce", description="(Admin) Global announcement in all Roblox servers")
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(message="Message to broadcast to all Roblox servers")
+    async def admin_announce_cmd(interaction: discord.Interaction, message: str):
+        await interaction.response.defer(ephemeral=True)
+    
+        base_url = os.environ["FASTAPI_BASE_URL"]  # ex: https://api.tondomaine.com
+        token = os.environ["INTERNAL_ADMIN_TOKEN"]
+    
+        body = {
+            "sender_name": interaction.user.display_name,
+            "message": message[:300],  # limite simple (tu peux ajuster)
+        }
+    
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.post(
+                    f"{base_url}/admin/announce",
+                    json=body,
+                    headers={"x-admin-token": token},
+                )
+            if r.status_code >= 300:
+                await interaction.followup.send(f"❌ API error: {r.status_code} {r.text[:400]}", ephemeral=True)
+                return
+        except Exception as e:
+            await interaction.followup.send(f"❌ Request failed: {e}", ephemeral=True)
+            return
+    
+        await interaction.followup.send("✅ Announcement sent to all Roblox servers.", ephemeral=False)
