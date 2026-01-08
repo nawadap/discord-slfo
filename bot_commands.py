@@ -23,7 +23,7 @@ from db import (
     enqueue_admin_action,
     get_guild_settings,
     upsert_guild_settings,
-    save_leaderboard,
+    get_leaderboard,
 )
 
 EMBED_COLOR = 0x0B2E1A  # SLFO dark forest green
@@ -153,6 +153,35 @@ class SwordInventoryView(discord.ui.View):
                 child.disabled = True
         await interaction.response.edit_message(view=self)
 
+class LeaderboardView(discord.ui.View):
+    def __init__(self, key: str, make_embed_fn):
+        super().__init__(timeout=180)
+        self.key = key
+        self.make_embed_fn = make_embed_fn
+        self._refresh()
+
+    def _refresh(self):
+        # disable button for active key
+        self.btn_points.disabled = self.key == "points"
+        self.btn_kills.disabled = self.key == "kills"
+        self.btn_robux.disabled = self.key == "robux"
+
+    async def _set(self, interaction: discord.Interaction, key: str):
+        self.key = key
+        self._refresh()
+        await interaction.response.edit_message(embed=await self.make_embed_fn(self.key), view=self)
+
+    @discord.ui.button(label="Points", style=discord.ButtonStyle.secondary)
+    async def btn_points(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "points")
+
+    @discord.ui.button(label="Kills", style=discord.ButtonStyle.secondary)
+    async def btn_kills(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "kills")
+
+    @discord.ui.button(label="Robux", style=discord.ButtonStyle.secondary)
+    async def btn_robux(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set(interaction, "robux")
 
 # ==================== Commands ====================
 
@@ -295,6 +324,44 @@ def setup_commands(tree: app_commands.CommandTree):
 
         view = SwordInventoryView(interaction.user.id, embed, pages)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    @tree.command(name="leaderboard", description="Show Top 10 leaderboard (Points/Kills/Robux)")
+    async def leaderboard_cmd(interaction: discord.Interaction):
+        async def make_embed(key: str) -> discord.Embed:
+            lb = await get_leaderboard(key)
+            now = int(time.time())
+
+            title_map = {
+                "points": "🏆 Top 10 — Points",
+                "kills": "🏆 Top 10 — Kills",
+                "robux": "🏆 Top 10 — Robux Donated",
+            }
+            suffix_map = {
+                "points": "pts",
+                "kills": "kills",
+                "robux": "R$",
+            }
+
+            e = discord.Embed(title=title_map.get(key, "🏆 Top 10"), color=EMBED_COLOR)
+
+            if not lb or not lb["data"]:
+                e.description = "No data yet. (Waiting for Roblox push)"
+                e.set_footer(text="SLFO — Leaderboard")
+                return e
+
+            updated_ago = max(0, now - int(lb["updated_at"]))
+            lines = []
+            for i, entry in enumerate(lb["data"][:10], start=1):
+                username = entry.get("username", "Unknown")
+                value = int(entry.get("value", 0))
+                lines.append(f"**#{i}** {username} — **{value} {suffix_map[key]}**")
+
+            e.description = "\n".join(lines)
+            e.set_footer(text=f"Updated {updated_ago}s ago • SLFO — Leaderboard")
+            return e
+
+        view = LeaderboardView("points", make_embed)
+        await interaction.response.send_message(embed=await make_embed("points"), view=view, ephemeral=False)
 
     @tree.command(name="guild_config_set", description="(Official) Configure roles/channels for a target guild")
     @is_official_admin()
