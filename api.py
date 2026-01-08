@@ -13,13 +13,8 @@ from starlette.concurrency import run_in_threadpool
 import requests
 
 from config import (
-    GUILD_ID,
-    LINKED_ROLE_ID,
-    VIP_ROLE_ID,
-    BETA_ROLE_ID,
+    OFFICIAL_GUILD_ID,
     ROBLOX_API_KEY,
-    ADMIN_LOG_CHANNEL_ID,
-    ANNOUNCE_CHANNEL_ID,
 )
 
 from db import (
@@ -35,6 +30,7 @@ from db import (
     set_admin_action_result,
     list_links,
     list_profiles,
+    get_guild_settings,
 )
 
 app = FastAPI(title="SLFO API")
@@ -60,53 +56,62 @@ def _check_key(x_api_key: str):
 
 
 async def _apply_roles(discord_id: int, *, linked: bool, vip: bool, beta: bool):
-    """Apply linked/vip/beta roles for a given discord user if they are in the guild."""
+    """Apply linked/vip/beta roles in every configured guild where the user is present."""
     if DISCORD_BOT is None:
         return
 
-    guild = DISCORD_BOT.get_guild(int(GUILD_ID))
-    if guild is None:
-        return
+    for guild in list(DISCORD_BOT.guilds):
+        try:
+            settings = await get_guild_settings(int(guild.id))
+            if not settings:
+                continue
 
-    try:
-        member = guild.get_member(int(discord_id))
-        if member is None:
-            member = await guild.fetch_member(int(discord_id))
-    except Exception:
-        # user not in server (or cannot fetch) -> keep linked in DB; roles will apply on rejoin
-        return
+            def role_obj(key: str):
+                rid = settings.get(key)
+                return guild.get_role(int(rid)) if rid else None
 
-    def role_obj(role_id: int):
-        return guild.get_role(int(role_id))
+            linked_role = role_obj("linked_role_id")
+            vip_role = role_obj("vip_role_id")
+            beta_role = role_obj("beta_role_id")
 
-    to_add = []
-    to_remove = []
+            # si aucune config de rôle, skip
+            if not any([linked_role, vip_role, beta_role]):
+                continue
 
-    linked_role = role_obj(LINKED_ROLE_ID)
-    vip_role = role_obj(VIP_ROLE_ID)
-    beta_role = role_obj(BETA_ROLE_ID)
+            # récupérer le member si présent
+            member = guild.get_member(int(discord_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(discord_id))
+                except Exception:
+                    continue  # pas dans ce serveur
 
-    # LINKED
-    if linked and linked_role and linked_role not in member.roles:
-        to_add.append(linked_role)
+            to_add = []
+            to_remove = []
 
-    # VIP
-    if vip and vip_role and vip_role not in member.roles:
-        to_add.append(vip_role)
-    if (not vip) and vip_role and vip_role in member.roles:
-        to_remove.append(vip_role)
+            # LINKED (on ne retire pas automatiquement ici, unlink géré via /unlink)
+            if linked and linked_role and linked_role not in member.roles:
+                to_add.append(linked_role)
 
-    # BETA
-    if beta and beta_role and beta_role not in member.roles:
-        to_add.append(beta_role)
-    if (not beta) and beta_role and beta_role in member.roles:
-        to_remove.append(beta_role)
+            # VIP
+            if vip and vip_role and vip_role not in member.roles:
+                to_add.append(vip_role)
+            if (not vip) and vip_role and vip_role in member.roles:
+                to_remove.append(vip_role)
 
-    if to_add:
-        await member.add_roles(*to_add, reason="SLFO role sync")
-    if to_remove:
-        await member.remove_roles(*to_remove, reason="SLFO role sync")
+            # BETA
+            if beta and beta_role and beta_role not in member.roles:
+                to_add.append(beta_role)
+            if (not beta) and beta_role and beta_role in member.roles:
+                to_remove.append(beta_role)
 
+            if to_add:
+                await member.add_roles(*to_add, reason="SLFO role sync")
+            if to_remove:
+                await member.remove_roles(*to_remove, reason="SLFO role sync")
+
+        except Exception as e:
+            print("[API] _apply_roles guild loop error:", e)
 
 # =========================
 # ===== Link Confirm ======
@@ -148,34 +153,53 @@ async def link_confirm(body: LinkConfirmBody, x_api_key: str = Header(default=""
     await store_link(int(discord_id), int(body.roblox_user_id), body.roblox_username)
     await delete_code(code)
 
-    # 🔔 Discord announce: linked
+    # 🔔 Announce + ✅ give LINKED role in every configured guild where user is present
     if DISCORD_BOT is not None:
-        ch = DISCORD_BOT.get_channel(int(ANNOUNCE_CHANNEL_ID))
-        if ch is not None:
-            embed = discord.Embed(title="🔗 Account Linked", color=0x1ABC9C)
-            embed.add_field(name="Discord", value=f"<@{discord_id}> (`{discord_id}`)", inline=False)
-            embed.add_field(
-                name="Roblox",
-                value=f"**{body.roblox_username}** (`{body.roblox_user_id}`)",
-                inline=False
-            )
-            embed.set_footer(text="SLFO — Link System")
+        for guild in list(DISCORD_BOT.guilds):
             try:
-                await ch.send(embed=embed)
-            except Exception as e:
-                print("[API] announce send failed:", e)
+                settings = await get_guild_settings(int(guild.id))
+                if not settings:
+                    continue
 
-    # ✅ Give LINKED role on link (VIP/BETA will be handled by /profile/update sync)
-    if DISCORD_BOT is not None:
-        guild = DISCORD_BOT.get_guild(int(GUILD_ID))
-        if guild is not None:
-            try:
-                member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
-                role = guild.get_role(int(LINKED_ROLE_ID))
-                if role is not None and member is not None:
-                    await member.add_roles(role, reason="SLFO link confirmed (Roblox)")
+                # announce
+                announce_id = settings.get("announce_channel_id")
+                if announce_id:
+                    ch = DISCORD_BOT.get_channel(int(announce_id))
+                    if ch is not None:
+                        embed = discord.Embed(title="🔗 Account Linked", color=0x1ABC9C)
+                        embed.add_field(name="Discord", value=f"<@{discord_id}> (`{discord_id}`)", inline=False)
+                        embed.add_field(
+                            name="Roblox",
+                            value=f"**{body.roblox_username}** (`{body.roblox_user_id}`)",
+                            inline=False
+                        )
+                        embed.set_footer(text="SLFO — Link System")
+                        try:
+                            await ch.send(embed=embed)
+                        except Exception as e:
+                            print("[API] announce send failed:", e)
+
+                # give linked role
+                linked_role_id = settings.get("linked_role_id")
+                if not linked_role_id:
+                    continue
+
+                member = guild.get_member(int(discord_id))
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(int(discord_id))
+                    except Exception:
+                        continue
+
+                role = guild.get_role(int(linked_role_id))
+                if role is not None and role not in member.roles:
+                    try:
+                        await member.add_roles(role, reason="SLFO link confirmed (Roblox)")
+                    except Exception as e:
+                        print("[API] Role add failed:", e)
+
             except Exception as e:
-                print("[API] Role add failed:", e)
+                print("[API] link_confirm guild loop error:", e)
 
     return {"ok": True}
 
@@ -293,7 +317,9 @@ async def admin_report(body: AdminActionReportBody, x_api_key: str = Header(defa
 
     # Discord embed (green/red)
     if DISCORD_BOT is not None:
-        ch = DISCORD_BOT.get_channel(int(ADMIN_LOG_CHANNEL_ID))
+        settings = await get_guild_settings(int(OFFICIAL_GUILD_ID))
+        log_id = settings.get("admin_log_channel_id") if settings else None
+        ch = DISCORD_BOT.get_channel(int(log_id)) if log_id else None
         if ch is not None:
             color = 0x2ECC71 if body.success else 0xE74C3C
             title = "✅ Admin Action Applied" if body.success else "❌ Admin Action Failed"
