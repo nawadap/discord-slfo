@@ -8,7 +8,7 @@ from config import DISCORD_TOKEN, API_HOST, API_PORT, OFFICIAL_GUILD_ID, DEV_GUI
 from db import init_db, get_link_by_discord, get_guild_settings
 from bot_api import bridge
 from api import app, set_discord_bot
-from bot_commands import setup_commands
+from bot_commands import setup_commands, on_app_command_error
 
 intents = discord.Intents.default()
 intents.members = True
@@ -21,7 +21,8 @@ async def on_ready():
 
     # setup slash commands
     setup_commands(bot.tree)
-
+    bot.tree.on_error = on_app_command_error
+    
     try:
         if DEV_GUILD_ID and int(DEV_GUILD_ID) != 0:
             guild = discord.Object(id=int(DEV_GUILD_ID))
