@@ -62,9 +62,15 @@ async def init_db():
             updated_at INTEGER NOT NULL
         )
         """)
-        
-        await db.commit()
 
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_cache (
+            key TEXT PRIMARY KEY,          -- "points" | "kills" | "robux"
+            data TEXT NOT NULL,            -- JSON entries
+            updated_at INTEGER NOT NULL
+        )
+        """)
+        await db.commit()
 
 # ===========================
 # ===== LINK SYSTEM ========
@@ -308,4 +314,29 @@ async def upsert_guild_settings(
             )
         )
         await db.commit()
+        
+async def save_leaderboard(key: str, data_json: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO leaderboard_cache VALUES (?, ?, ?)",
+            (str(key), str(data_json), int(time.time()))
+        )
+        await db.commit()
 
+async def get_leaderboard(key: str) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT data, updated_at FROM leaderboard_cache WHERE key=?",
+            (str(key),)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+
+        data_json, updated_at = row
+        try:
+            data = json.loads(data_json)
+        except Exception:
+            data = []
+
+        return {"key": key, "data": data, "updated_at": updated_at}
