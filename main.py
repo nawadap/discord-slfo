@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 
 from config import DISCORD_TOKEN, API_HOST, API_PORT, OFFICIAL_GUILD_ID, DEV_GUILD_ID
-from db import init_db, get_guild_settings, get_link_by_discord
+from db import get_link_by_discord, get_guild_settings
 from bot_api import bridge
 from api import app, set_discord_bot
 from bot_commands import setup_commands
