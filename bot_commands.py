@@ -317,4 +317,4 @@ def setup_commands(tree: app_commands.CommandTree):
             await interaction.followup.send(f"❌ Request failed: {e}", ephemeral=True)
             return
     
-        await interaction.followup.send("✅ Announcement sent to all Roblox servers.", ephemeral=False)
+        await interaction.followup.send("✅ Announcement sent to all Roblox servers.", ephemeral=True)
