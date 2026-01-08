@@ -5,7 +5,14 @@ import discord
 from discord import app_commands
 import os
 import httpx
-from config import GUILD_ID, LINKED_ROLE_ID, CODE_TTL_SECONDS, ADMIN_LOG_CHANNEL_ID
+from config import (
+    OFFICIAL_GUILD_ID,
+    DEV_GUILD_ID,
+    LINKED_ROLE_ID,
+    CODE_TTL_SECONDS,
+    ADMIN_LOG_CHANNEL_ID,
+    ADMIN_ROLE_ID,
+)
 from db import (
     store_code,
     get_link_by_discord,
@@ -39,6 +46,35 @@ def build_sword_lines(swords: dict):
 def _safe_amount(x: int) -> int:
     return max(0, int(x))
 
+def is_official_admin():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        # Doit être dans un serveur
+        if not interaction.guild or not interaction.guild_id:
+            raise app_commands.CheckFailure("Guild only.")
+
+        # Doit être sur le serveur officiel
+        if int(interaction.guild_id) != int(OFFICIAL_GUILD_ID):
+            raise app_commands.CheckFailure("Not in official guild.")
+
+        # Vérif rôle admin
+        try:
+            member = interaction.user
+            # interaction.user est souvent un Member, mais on sécurise
+            if not isinstance(member, discord.Member):
+                member = await interaction.guild.fetch_member(interaction.user.id)
+
+            return any(int(r.id) == int(ADMIN_ROLE_ID) for r in member.roles)
+        except Exception:
+            return False
+
+    return app_commands.check(predicate)
+
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CheckFailure):
+        await interaction.response.send_message(
+            "❌",
+            ephemeral=True
+        )
 
 # ==================== View ====================
 
@@ -150,23 +186,22 @@ def setup_commands(tree: app_commands.CommandTree):
         if not removed:
             await interaction.followup.send("❌ Not linked.", ephemeral=True)
             return
-    
-        # 🧹 remove role
+            
+        # 🧹 remove role (sur le serveur officiel uniquement)
         try:
-            guild = interaction.guild
-            if guild and int(guild.id) == int(GUILD_ID):
-    
-                role = guild.get_role(int(LINKED_ROLE_ID))
+            official_guild = interaction.client.get_guild(int(OFFICIAL_GUILD_ID))
+            if official_guild:
+                role = official_guild.get_role(int(LINKED_ROLE_ID))
                 if role:
                     try:
-                        member = await guild.fetch_member(interaction.user.id)
+                        member = await official_guild.fetch_member(interaction.user.id)
                         if role in member.roles:
                             await member.remove_roles(role, reason="SLFO unlink")
                     except discord.NotFound:
                         pass
         except Exception as e:
             print("[BOT] Role remove failed:", e)
-    
+            
         # 🧾 admin log
         try:
             ch = interaction.client.get_channel(int(ADMIN_LOG_CHANNEL_ID))
@@ -251,7 +286,7 @@ def setup_commands(tree: app_commands.CommandTree):
     # ---------- ADMIN COMMANDS ----------
 
     @tree.command(name="vault_add", description="(Admin) Add Light to a player's Vault")
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_official_admin()
     async def vault_add_cmd(interaction, pseudo: str, amount: int):
         amount = _safe_amount(amount)
         link = await (get_link_by_roblox_user_id(int(pseudo)) if pseudo.isdigit() else get_link_by_roblox_username(pseudo))
@@ -264,7 +299,7 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.send_message(f"✅ BANK_ADD {amount} queued for {name} (#{action_id})", ephemeral=True)
 
     @tree.command(name="vault_remove", description="(Admin) Remove Light from a player's Vault")
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_official_admin()
     async def vault_remove_cmd(interaction, pseudo: str, amount: int):
         amount = _safe_amount(amount)
         link = await (get_link_by_roblox_user_id(int(pseudo)) if pseudo.isdigit() else get_link_by_roblox_username(pseudo))
@@ -277,7 +312,7 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.send_message(f"✅ BANK_REMOVE {amount} queued for {name} (#{action_id})", ephemeral=True)
 
     @tree.command(name="hand_remove", description="(Admin) Remove Light from a player's hand")
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_official_admin()
     async def hand_remove_cmd(interaction, pseudo: str, amount: int):
         amount = _safe_amount(amount)
         link = await (get_link_by_roblox_user_id(int(pseudo)) if pseudo.isdigit() else get_link_by_roblox_username(pseudo))
@@ -290,7 +325,7 @@ def setup_commands(tree: app_commands.CommandTree):
         await interaction.response.send_message(f"✅ HAND_REMOVE {amount} queued for {name} (#{action_id})", ephemeral=True)
 
     @tree.command(name="admin_announce", description="(Admin) Global announcement in all Roblox servers")
-    @app_commands.checks.has_permissions(administrator=True)
+    @is_official_admin()
     @app_commands.describe(message="Message to broadcast to all Roblox servers")
     async def admin_announce_cmd(interaction: discord.Interaction, message: str):
         await interaction.response.defer(ephemeral=True)
