@@ -4,7 +4,7 @@ import time
 import discord
 from discord import app_commands
 
-from config import GUILD_ID, LINKED_ROLE_ID, CODE_TTL_SECONDS
+from config import GUILD_ID, LINKED_ROLE_ID, CODE_TTL_SECONDS, ADMIN_LOG_CHANNEL_ID
 from db import (
     store_code,
     get_link_by_discord,
@@ -139,55 +139,62 @@ def setup_commands(tree: app_commands.CommandTree):
 
     @tree.command(name="unlink", description="Unlink your Roblox account")
     async def unlink_cmd(interaction: discord.Interaction):
-
-        # Defer pour éviter "interaction failed" si fetch prend > 3s
+    
         await interaction.response.defer(ephemeral=True)
-
+    
+        # 🔎 get link BEFORE deletion (for logging)
+        link_before = await get_link_by_discord(interaction.user.id)
+    
         removed = await delete_link(interaction.user.id)
         if not removed:
             await interaction.followup.send("❌ Not linked.", ephemeral=True)
             return
-
-        # ✅ remove role from the guild where the command is used
+    
+        # 🧹 remove role
         try:
             guild = interaction.guild
-            if guild is None:
-                await interaction.followup.send("⚠️ This command must be used inside the Discord server.", ephemeral=True)
-                return
-
-            # (optionnel mais utile) vérifie que c'est bien TON serveur
-            if int(guild.id) != int(GUILD_ID):
-                await interaction.followup.send("⚠️ Please use this command in the SLFO server.", ephemeral=True)
-                return
-
-            role = guild.get_role(int(LINKED_ROLE_ID))
-            if role is None:
-                await interaction.followup.send("⚠️ Linked role not found on this server.", ephemeral=True)
-                return
-
-            # fetch member (anti-cache)
-            member = await guild.fetch_member(interaction.user.id)
-
-            # debug
-            print("[UNLINK] member=", member, "roles=", [r.id for r in member.roles])
-
-            if role in member.roles:
-                await member.remove_roles(role, reason="SLFO unlink")
-                print("[UNLINK] role removed ok")
-            else:
-                print("[UNLINK] role not present on member")
-
-        except discord.Forbidden:
-            await interaction.followup.send("❌ I don't have permission to remove roles (Manage Roles).", ephemeral=True)
-            return
-        except discord.NotFound:
-            # user not found in guild
-            pass
+            if guild and int(guild.id) == int(GUILD_ID):
+    
+                role = guild.get_role(int(LINKED_ROLE_ID))
+                if role:
+                    try:
+                        member = await guild.fetch_member(interaction.user.id)
+                        if role in member.roles:
+                            await member.remove_roles(role, reason="SLFO unlink")
+                    except discord.NotFound:
+                        pass
         except Exception as e:
-            print("[BOT] Role remove failed:", repr(e))
-
-        await interaction.followup.send("🧹 Link removed.", ephemeral=True)
-
+            print("[BOT] Role remove failed:", e)
+    
+        # 🧾 admin log
+        try:
+            ch = interaction.client.get_channel(int(ADMIN_LOG_CHANNEL_ID))
+            if ch:
+                embed = discord.Embed(
+                    title="🔓 Account Unlinked",
+                    color=0xE67E22
+                )
+    
+                embed.add_field(
+                    name="Discord",
+                    value=f"<@{interaction.user.id}> (`{interaction.user.id}`)",
+                    inline=False
+                )
+    
+                if link_before:
+                    _, rid, rname, _ = link_before
+                    embed.add_field(
+                        name="Roblox",
+                        value=f"**{rname}** (`{rid}`)",
+                        inline=False
+                    )
+    
+                embed.set_footer(text="SLFO — Link System")
+                await ch.send(embed=embed)
+        except Exception as e:
+            print("[BOT] Unlink log failed:", e)
+    
+        await interaction.followup.send("🧹 Link removed successfully.", ephemeral=True)
 
     # ---------- PROFILE ----------
 
