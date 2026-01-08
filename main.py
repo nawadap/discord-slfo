@@ -4,15 +4,14 @@ import uvicorn
 import discord
 from discord.ext import commands
 
-from config import DISCORD_TOKEN, API_HOST, API_PORT, GUILD_ID
-from config import LINKED_ROLE_ID
-from db import get_link_by_discord
+from config import DISCORD_TOKEN, API_HOST, API_PORT, OFFICIAL_GUILD_ID, DEV_GUILD_ID
+from db import init_db, get_guild_settings, get_link_by_discord
 from bot_api import bridge
 from api import app, set_discord_bot
-from db import init_db
 from bot_commands import setup_commands
 
 intents = discord.Intents.default()
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 set_discord_bot(bot)
 @bot.event
@@ -24,11 +23,11 @@ async def on_ready():
     setup_commands(bot.tree)
 
     try:
-        if GUILD_ID and int(GUILD_ID) != 0:
-            guild = discord.Object(id=int(GUILD_ID))
+        if DEV_GUILD_ID and int(DEV_GUILD_ID) != 0:
+            guild = discord.Object(id=int(DEV_GUILD_ID))
             bot.tree.copy_global_to(guild=guild)
             await bot.tree.sync(guild=guild)
-            print(f"[BOT] Slash commands synced to guild {GUILD_ID}")
+            print(f"[BOT] Slash commands synced to guild {DEV_GUILD_ID}")
         else:
             await bot.tree.sync()
             print("[BOT] Slash commands synced globally (peut prendre du temps)")
@@ -39,21 +38,30 @@ async def on_ready():
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    # si le membre revient, on lui remet le rôle s'il est déjà link
-    if member.guild.id != int(GUILD_ID):
-        return
-
-    link = await get_link_by_discord(member.id)
-    if not link:
-        return
-
-    role = member.guild.get_role(int(LINKED_ROLE_ID))
-    if role is None:
-        return
-
+    # Si le membre est linked en DB, on lui remet le rôle linked du serveur où il rejoint (si configuré)
     try:
+        link = await get_link_by_discord(member.id)
+        if not link:
+            return
+
+        settings = await get_guild_settings(int(member.guild.id))
+        if not settings:
+            return
+
+        linked_role_id = settings.get("linked_role_id")
+        if not linked_role_id:
+            return
+
+        role = member.guild.get_role(int(linked_role_id))
+        if role is None:
+            return
+
+        if role in member.roles:
+            return
+
         await member.add_roles(role, reason="SLFO linked user rejoined")
-        print(f"[BOT] Re-applied linked role to {member} ({member.id})")
+        print(f"[BOT] Re-applied linked role to {member} ({member.id}) in guild {member.guild.id}")
+
     except Exception as e:
         print("[BOT] Failed to re-apply role on join:", e)
 
