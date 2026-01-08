@@ -2,7 +2,8 @@ import json
 import time
 from typing import Optional, List
 import html
-
+import os
+import httpx
 import discord
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -314,6 +315,39 @@ async def admin_report(body: AdminActionReportBody, x_api_key: str = Header(defa
 
     return {"ok": True}
 
+class AdminAnnounceBody(BaseModel):
+    sender_name: str
+    message: str
+
+@app.post("/admin/announce")
+async def admin_announce(body: AdminAnnounceBody, x_admin_token: str = Header(default="")):
+    # 🔒 endpoint réservé au bot Discord (pas à Roblox)
+    if x_admin_token != os.environ.get("INTERNAL_ADMIN_TOKEN", ""):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    universe_id = os.environ["ROBLOX_UNIVERSE_ID"]
+    open_cloud_key = os.environ["ROBLOX_OPEN_CLOUD_KEY"]
+
+    url = f"https://apis.roblox.com/cloud/v2/universes/{universe_id}:publishMessage"
+
+    payload = {"SenderName": body.sender_name, "Message": body.message}
+    req_body = {
+        "topic": "slfo_admin_announce",
+        "message": json.dumps(payload, ensure_ascii=False),
+    }
+
+    headers = {
+        "x-api-key": open_cloud_key,
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(url, headers=headers, json=req_body)
+
+    if r.status_code >= 300:
+        raise HTTPException(status_code=502, detail=f"Roblox publish failed: {r.status_code} {r.text}")
+
+    return {"ok": True}
 
 # =========================
 # ===== Dashboard (/) =====
