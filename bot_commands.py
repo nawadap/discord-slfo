@@ -158,9 +158,9 @@ class LeaderboardView(discord.ui.View):
         super().__init__(timeout=180)
         self.key = key
         self.make_embed_fn = make_embed_fn
-        self._refresh()
+        self._update_buttons()
 
-    def _refresh(self):
+    def _update_buttons(self):
         # disable button for active key
         self.btn_points.disabled = self.key == "points"
         self.btn_kills.disabled = self.key == "kills"
@@ -168,7 +168,7 @@ class LeaderboardView(discord.ui.View):
 
     async def _set(self, interaction: discord.Interaction, key: str):
         self.key = key
-        self._refresh()
+        self._update_buttons()
         await interaction.response.edit_message(embed=await self.make_embed_fn(self.key), view=self)
 
     @discord.ui.button(label="Points", style=discord.ButtonStyle.secondary)
