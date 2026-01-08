@@ -9,6 +9,8 @@ import discord
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
+import requests
 
 from config import (
     GUILD_ID,
@@ -322,51 +324,41 @@ class AdminAnnounceBody(BaseModel):
 
 @app.post("/admin/announce")
 async def admin_announce(body: AdminAnnounceBody, x_admin_token: str = Header(default="")):
-    # 🔒 Sécurité bot Discord
     if x_admin_token != os.environ.get("INTERNAL_ADMIN_TOKEN", ""):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     universe_id = os.getenv("ROBLOX_UNIVERSE_ID")
     open_cloud_key = os.getenv("ROBLOX_OPEN_CLOUD_KEY")
-
     if not universe_id or not open_cloud_key:
         raise HTTPException(status_code=500, detail="Missing Roblox configuration")
 
     url = f"https://apis.roblox.com/cloud/v2/universes/{universe_id}:publishMessage"
 
-    payload = {
-        "SenderName": body.sender_name,
-        "Message": body.message
-    }
-
+    payload = {"SenderName": body.sender_name, "Message": body.message}
     req_body = {
         "topic": "slfo_admin_announce",
-        "message": json.dumps(payload, ensure_ascii=False)
+        "message": json.dumps(payload, ensure_ascii=False),
     }
 
     headers = {
         "x-api-key": open_cloud_key,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
-    timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-    transport = httpx.AsyncHTTPTransport(retries=2)
-    
+    def _do_request():
+        # ignore les proxies env pour éviter des comportements chelous
+        s = requests.Session()
+        s.trust_env = False
+        return s.post(url, headers=headers, json=req_body, timeout=(10, 30))
+
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout,
-            transport=transport,
-            trust_env=False,   # ✅ ignore HTTP_PROXY/HTTPS_PROXY/NO_PROXY
-        ) as client:
-            r = await client.post(url, headers=headers, json=req_body)
-    except (httpx.ReadError, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
-        raise HTTPException(status_code=502, detail=f"Roblox network error: {type(e).__name__}: {e}")
+        r = await run_in_threadpool(_do_request)
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Roblox network error (requests): {type(e).__name__}: {e}")
 
     if r.status_code >= 300:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Roblox publish failed: {r.status_code} {r.text[:600]}"
-        )
+        # r.text peut être long
+        raise HTTPException(status_code=502, detail=f"Roblox publish failed: {r.status_code} {r.text[:600]}")
 
     return {"ok": True}
 
