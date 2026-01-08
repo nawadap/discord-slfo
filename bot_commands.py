@@ -8,11 +8,10 @@ import httpx
 from config import (
     OFFICIAL_GUILD_ID,
     DEV_GUILD_ID,
-    LINKED_ROLE_ID,
     CODE_TTL_SECONDS,
-    ADMIN_LOG_CHANNEL_ID,
     ADMIN_ROLE_ID,
 )
+
 from db import (
     store_code,
     get_link_by_discord,
@@ -22,6 +21,8 @@ from db import (
     get_link_by_roblox_user_id,
     get_profile_by_roblox_user_id,
     enqueue_admin_action,
+    get_guild_settings,
+    upsert_guild_settings,
 )
 
 EMBED_COLOR = 0x0B2E1A  # SLFO dark forest green
@@ -68,6 +69,11 @@ def is_official_admin():
             return False
 
     return app_commands.check(predicate)
+
+async def get_current_guild_settings(interaction: discord.Interaction) -> dict | None:
+    if not interaction.guild_id:
+        return None
+    return await get_guild_settings(int(interaction.guild_id))
 
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
@@ -189,12 +195,14 @@ def setup_commands(tree: app_commands.CommandTree):
             
         # 🧹 remove role (sur le serveur officiel uniquement)
         try:
-            official_guild = interaction.client.get_guild(int(OFFICIAL_GUILD_ID))
-            if official_guild:
-                role = official_guild.get_role(int(LINKED_ROLE_ID))
+            settings = await get_current_guild_settings(interaction)
+            linked_role_id = settings.get("linked_role_id") if settings else None
+
+            if interaction.guild and linked_role_id:
+                role = interaction.guild.get_role(int(linked_role_id))
                 if role:
                     try:
-                        member = await official_guild.fetch_member(interaction.user.id)
+                        member = await interaction.guild.fetch_member(interaction.user.id)
                         if role in member.roles:
                             await member.remove_roles(role, reason="SLFO unlink")
                     except discord.NotFound:
@@ -204,19 +212,22 @@ def setup_commands(tree: app_commands.CommandTree):
             
         # 🧾 admin log
         try:
-            ch = interaction.client.get_channel(int(ADMIN_LOG_CHANNEL_ID))
+            settings = await get_current_guild_settings(interaction)
+            log_channel_id = settings.get("admin_log_channel_id") if settings else None
+
+            ch = interaction.client.get_channel(int(log_channel_id)) if log_channel_id else None
             if ch:
                 embed = discord.Embed(
                     title="🔓 Account Unlinked",
                     color=0xE67E22
                 )
-    
+
                 embed.add_field(
                     name="Discord",
                     value=f"<@{interaction.user.id}> (`{interaction.user.id}`)",
                     inline=False
                 )
-    
+
                 if link_before:
                     _, rid, rname, _ = link_before
                     embed.add_field(
@@ -224,11 +235,12 @@ def setup_commands(tree: app_commands.CommandTree):
                         value=f"**{rname}** (`{rid}`)",
                         inline=False
                     )
-    
+
                 embed.set_footer(text="SLFO — Link System")
                 await ch.send(embed=embed)
         except Exception as e:
             print("[BOT] Unlink log failed:", e)
+
     
         await interaction.followup.send("🧹 Link removed successfully.", ephemeral=True)
 
@@ -282,6 +294,68 @@ def setup_commands(tree: app_commands.CommandTree):
 
         view = SwordInventoryView(interaction.user.id, embed, pages)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    @tree.command(name="guild_config_set", description="(Official) Configure roles/channels for a target guild")
+    @is_official_admin()
+    @app_commands.describe(
+        target_guild_id="Server ID à configurer",
+        linked_role_id="ID role LINKED (optionnel)",
+        vip_role_id="ID role VIP (optionnel)",
+        beta_role_id="ID role BETA (optionnel)",
+        announce_channel_id="ID salon announce (optionnel)",
+        admin_log_channel_id="ID salon logs (optionnel)",
+    )
+    async def guild_config_set(
+        interaction: discord.Interaction,
+        target_guild_id: str,
+        linked_role_id: str = None,
+        vip_role_id: str = None,
+        beta_role_id: str = None,
+        announce_channel_id: str = None,
+        admin_log_channel_id: str = None,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        def to_int(x: str | None):
+            if x is None:
+                return None
+            x = x.strip()
+            return int(x) if x.isdigit() else None
+
+        gid = int(target_guild_id)
+
+        await upsert_guild_settings(
+            gid,
+            linked_role_id=to_int(linked_role_id),
+            vip_role_id=to_int(vip_role_id),
+            beta_role_id=to_int(beta_role_id),
+            announce_channel_id=to_int(announce_channel_id),
+            admin_log_channel_id=to_int(admin_log_channel_id),
+        )
+
+        await interaction.followup.send(f"✅ Settings enregistrés pour `{gid}`.", ephemeral=True)
+    
+    @tree.command(name="guild_config_show", description="(Official) Show config for a target guild")
+    @is_official_admin()
+    @app_commands.describe(target_guild_id="Server ID à afficher")
+    async def guild_config_show(interaction: discord.Interaction, target_guild_id: str):
+        await interaction.response.defer(ephemeral=True)
+
+        gid = int(target_guild_id)
+        s = await get_guild_settings(gid)
+        if not s:
+            await interaction.followup.send(f"❌ Aucune config trouvée pour `{gid}`.", ephemeral=True)
+            return
+
+        msg = (
+            f"**Config `{gid}`**\n"
+            f"LINKED_ROLE_ID: `{s.get('linked_role_id')}`\n"
+            f"VIP_ROLE_ID: `{s.get('vip_role_id')}`\n"
+            f"BETA_ROLE_ID: `{s.get('beta_role_id')}`\n"
+            f"ANNOUNCE_CHANNEL_ID: `{s.get('announce_channel_id')}`\n"
+            f"ADMIN_LOG_CHANNEL_ID: `{s.get('admin_log_channel_id')}`\n"
+        )
+        await interaction.followup.send(msg, ephemeral=True)
 
     # ---------- ADMIN COMMANDS ----------
 
