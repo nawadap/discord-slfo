@@ -350,10 +350,14 @@ async def admin_announce(body: AdminAnnounceBody, x_admin_token: str = Header(de
     }
 
     timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
-    transport = httpx.AsyncHTTPTransport(local_address="0.0.0.0")  # force IPv4
-
+    transport = httpx.AsyncHTTPTransport(retries=2)
+    
     try:
-        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout,
+            transport=transport,
+            trust_env=False,   # ✅ ignore HTTP_PROXY/HTTPS_PROXY/NO_PROXY
+        ) as client:
             r = await client.post(url, headers=headers, json=req_body)
     except (httpx.ReadError, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as e:
         raise HTTPException(status_code=502, detail=f"Roblox network error: {type(e).__name__}: {e}")
