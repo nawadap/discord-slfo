@@ -23,6 +23,7 @@ from db import (
     enqueue_admin_action,
     get_guild_settings,
     upsert_guild_settings,
+    save_leaderboard,
 )
 
 EMBED_COLOR = 0x0B2E1A  # SLFO dark forest green
