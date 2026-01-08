@@ -51,6 +51,18 @@ async def init_db():
         )
         """)
 
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            linked_role_id INTEGER,
+            vip_role_id INTEGER,
+            beta_role_id INTEGER,
+            announce_channel_id INTEGER,
+            admin_log_channel_id INTEGER,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+        
         await db.commit()
 
 
@@ -231,3 +243,69 @@ async def list_profiles():
         data["updated_at"] = updated_at
         out[int(roblox_user_id)] = data
     return out
+
+async def get_guild_settings(guild_id: int) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT linked_role_id, vip_role_id, beta_role_id,
+                   announce_channel_id, admin_log_channel_id, updated_at
+            FROM guild_settings
+            WHERE guild_id=?
+            """,
+            (int(guild_id),)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+
+        linked_role_id, vip_role_id, beta_role_id, announce_channel_id, admin_log_channel_id, updated_at = row
+        return {
+            "guild_id": int(guild_id),
+            "linked_role_id": linked_role_id,
+            "vip_role_id": vip_role_id,
+            "beta_role_id": beta_role_id,
+            "announce_channel_id": announce_channel_id,
+            "admin_log_channel_id": admin_log_channel_id,
+            "updated_at": updated_at,
+        }
+
+
+async def upsert_guild_settings(
+    guild_id: int,
+    linked_role_id: Optional[int] = None,
+    vip_role_id: Optional[int] = None,
+    beta_role_id: Optional[int] = None,
+    announce_channel_id: Optional[int] = None,
+    admin_log_channel_id: Optional[int] = None,
+):
+    now = int(time.time())
+    async with aiosqlite.connect(DB_PATH) as db:
+        # On INSERT si absent, sinon UPDATE en conservant les anciennes valeurs si param=None
+        await db.execute(
+            """
+            INSERT INTO guild_settings (
+                guild_id, linked_role_id, vip_role_id, beta_role_id,
+                announce_channel_id, admin_log_channel_id, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                linked_role_id = COALESCE(excluded.linked_role_id, guild_settings.linked_role_id),
+                vip_role_id = COALESCE(excluded.vip_role_id, guild_settings.vip_role_id),
+                beta_role_id = COALESCE(excluded.beta_role_id, guild_settings.beta_role_id),
+                announce_channel_id = COALESCE(excluded.announce_channel_id, guild_settings.announce_channel_id),
+                admin_log_channel_id = COALESCE(excluded.admin_log_channel_id, guild_settings.admin_log_channel_id),
+                updated_at = excluded.updated_at
+            """,
+            (
+                int(guild_id),
+                linked_role_id,
+                vip_role_id,
+                beta_role_id,
+                announce_channel_id,
+                admin_log_channel_id,
+                now,
+            )
+        )
+        await db.commit()
+
