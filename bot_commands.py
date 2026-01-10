@@ -459,6 +459,12 @@ def setup_commands(tree: app_commands.CommandTree):
                     )
                     return
 
+                if await has_pending_action(int(roblox_id), "HAND_REMOVE"):
+                    await confirm_inter.followup.send(
+                        "⏳ You already have a purchase pending. Wait for Roblox to apply it.",
+                        ephemeral=True
+                    )
+                    return
                 action_id = await enqueue_admin_action(int(roblox_id), "HAND_REMOVE", int(item["cost"]))
 
                 log = discord.Embed(title="🛒 Store Purchase Queued", color=0x2ECC71)
