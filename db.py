@@ -392,3 +392,12 @@ async def set_store_purchase_status(purchase_id: int, status: str):
             (str(status), int(purchase_id))
         )
         await db.commit()
+
+async def has_pending_action(roblox_user_id: int, action: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT 1 FROM admin_actions WHERE roblox_user_id=? AND action=? AND done=0 LIMIT 1",
+            (int(roblox_user_id), str(action))
+        )
+        row = await cur.fetchone()
+        return row is not None
