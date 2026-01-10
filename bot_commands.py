@@ -24,10 +24,16 @@ from db import (
     get_guild_settings,
     upsert_guild_settings,
     get_leaderboard,
+    create_store_purchase,
 )
 
 EMBED_COLOR = 0x0B2E1A  # SLFO dark forest green
+STORE_LOG_CHANNEL_ID = 1459507040543051841
 
+STORE_ITEMS = [
+    # item_key, label, cost_points, reward_robux
+    ("robux_100", "💚 100 Robux — 1 000 000 points", 1_000_000, 100),
+]
 
 # ==================== Utils ====================
 def format_number(n: int) -> str:
@@ -195,6 +201,66 @@ class LeaderboardView(discord.ui.View):
     async def btn_robux(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._set(interaction, "robux")
 
+class StoreConfirmView(discord.ui.View):
+    def __init__(self, owner_id: int, item: dict, on_confirm):
+        super().__init__(timeout=120)
+        self.owner_id = owner_id
+        self.item = item
+        self.on_confirm = on_confirm
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ Only the command author can use this.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="✅ Confirm purchase", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction, self.item)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+        await interaction.response.edit_message(content="❌ Purchase cancelled.", embed=None, view=self)
+
+
+class StoreSelect(discord.ui.Select):
+    def __init__(self):
+        options = []
+        for item_key, label, cost, reward in STORE_ITEMS:
+            options.append(discord.SelectOption(
+                label=label,
+                value=item_key,
+                description=f"Costs {format_number(cost)} points → {reward} Robux"
+            ))
+        super().__init__(placeholder="Choose an item…", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        view: StoreView = self.view  # type: ignore
+        await view.handle_select(interaction, self.values[0])
+
+
+class StoreView(discord.ui.View):
+    def __init__(self, owner_id: int, on_choose):
+        super().__init__(timeout=180)
+        self.owner_id = owner_id
+        self.on_choose = on_choose
+        self.add_item(StoreSelect())
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("❌ Only the command author can use this.", ephemeral=True)
+            return False
+        return True
+
+    async def handle_select(self, interaction: discord.Interaction, item_key: str):
+        await self.on_choose(interaction, item_key)
 
 # ==================== Commands ====================
 
@@ -337,6 +403,102 @@ def setup_commands(tree: app_commands.CommandTree):
 
         view = SwordInventoryView(interaction.user.id, embed, pages)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=False)
+
+    @tree.command(name="store", description="Open the store (convert points into bonuses)")
+    async def store_cmd(interaction: discord.Interaction):
+        # doit être lié
+        link = await get_link_by_discord(interaction.user.id)
+        if not link:
+            await interaction.response.send_message("❌ You must `/link` your account first.", ephemeral=True)
+            return
+
+        discord_id, roblox_id, roblox_name, _ = link
+
+        async def on_choose(inter: discord.Interaction, item_key: str):
+            item = None
+            for k, label, cost, reward in STORE_ITEMS:
+                if k == item_key:
+                    item = {"key": k, "label": label, "cost": int(cost), "reward": int(reward)}
+                    break
+            if not item:
+                await inter.response.send_message("❌ Unknown item.", ephemeral=True)
+                return
+
+            # récupère profil cache DB (sync toutes les 60s)
+            profile = await get_profile_by_roblox_user_id(int(roblox_id))
+            points = int(profile["points"]) if profile else 0
+
+            embed = discord.Embed(title="🛒 Store — SLFO", color=EMBED_COLOR)
+            embed.add_field(name="Item", value=item["label"], inline=False)
+            embed.add_field(name="Cost", value=f"{format_number(item['cost'])} points", inline=True)
+            embed.add_field(name="Reward", value=f"{item['reward']} Robux", inline=True)
+            embed.add_field(name="Your points (last sync)", value=format_number(points), inline=False)
+            embed.set_footer(text="Confirm to queue the purchase. Points will be removed in-game.")
+
+            async def on_confirm(confirm_inter: discord.Interaction, chosen_item: dict):
+                # re-check points at confirm time
+                prof2 = await get_profile_by_roblox_user_id(int(roblox_id))
+                points2 = int(prof2["points"]) if prof2 else 0
+
+                if points2 < int(chosen_item["cost"]):
+                    await confirm_inter.followup.send(
+                        f"❌ Not enough points. You have {format_number(points2)}.",
+                        ephemeral=True
+                    )
+                    return
+
+                # audit row
+                purchase_id = await create_store_purchase(
+                    discord_id=int(discord_id),
+                    roblox_user_id=int(roblox_id),
+                    roblox_username=str(roblox_name),
+                    item_key=str(chosen_item["key"]),
+                    cost_points=int(chosen_item["cost"]),
+                    reward_robux=int(chosen_item["reward"]),
+                )
+
+                # queue action to Roblox (removes points from hand)
+                action_id = await enqueue_admin_action(int(roblox_id), "HAND_REMOVE", int(chosen_item["cost"]))
+
+                # log channel
+                ch = interaction.client.get_channel(int(STORE_LOG_CHANNEL_ID))
+                if ch is None:
+                    try:
+                        ch = await interaction.client.fetch_channel(int(STORE_LOG_CHANNEL_ID))
+                    except Exception:
+                        ch = None
+
+                if ch:
+                    log_embed = discord.Embed(title="🛒 Store Purchase Queued", color=0x2ECC71)
+                    log_embed.add_field(name="Discord", value=f"<@{discord_id}> (`{discord_id}`)", inline=False)
+                    log_embed.add_field(name="Roblox", value=f"**{roblox_name}** (`{roblox_id}`)", inline=False)
+                    log_embed.add_field(name="Item", value=chosen_item["label"], inline=False)
+                    log_embed.add_field(name="Cost", value=f"{format_number(chosen_item['cost'])} points", inline=True)
+                    log_embed.add_field(name="Reward", value=f"{chosen_item['reward']} Robux", inline=True)
+                    log_embed.add_field(name="PurchaseId", value=f"`{purchase_id}`", inline=True)
+                    log_embed.add_field(name="ActionId", value=f"`{action_id}`", inline=True)
+                    log_embed.set_footer(text="Roblox will apply HAND_REMOVE via /admin/actions/pull")
+                    try:
+                        await ch.send(embed=log_embed)
+                    except Exception:
+                        pass
+
+                await confirm_inter.followup.send(
+                    f"✅ Purchase queued! (PurchaseId `{purchase_id}`)\n"
+                    f"Points will be removed in-game shortly.",
+                    ephemeral=True
+                )
+
+            view = StoreConfirmView(inter.user.id, item, on_confirm)
+            await inter.response.edit_message(embed=embed, view=view)
+
+        embed = discord.Embed(
+            title="🛒 Store — SLFO",
+            description="Select an item to purchase.\nYour points are based on the last Roblox sync (~60s).",
+            color=EMBED_COLOR
+        )
+        view = StoreView(interaction.user.id, on_choose)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @tree.command(name="leaderboard", description="Show Top 10 leaderboard (Points/Kills/Robux)")
     async def leaderboard_cmd(interaction: discord.Interaction):
