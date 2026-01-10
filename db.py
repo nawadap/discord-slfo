@@ -70,6 +70,21 @@ async def init_db():
             updated_at INTEGER NOT NULL
         )
         """)
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS store_purchases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id INTEGER NOT NULL,
+            roblox_user_id INTEGER NOT NULL,
+            roblox_username TEXT NOT NULL,
+            item_key TEXT NOT NULL,
+            cost_points INTEGER NOT NULL,
+            reward_robux INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued' -- queued | applied | failed
+        )
+        """)
+
         await db.commit()
 
 # ===========================
@@ -340,3 +355,40 @@ async def get_leaderboard(key: str) -> Optional[dict]:
             data = []
 
         return {"key": key, "data": data, "updated_at": updated_at}
+
+async def create_store_purchase(
+    discord_id: int,
+    roblox_user_id: int,
+    roblox_username: str,
+    item_key: str,
+    cost_points: int,
+    reward_robux: int,
+) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            INSERT INTO store_purchases
+            (discord_id, roblox_user_id, roblox_username, item_key, cost_points, reward_robux, created_at, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')
+            """,
+            (
+                int(discord_id),
+                int(roblox_user_id),
+                str(roblox_username),
+                str(item_key),
+                int(cost_points),
+                int(reward_robux),
+                int(time.time()),
+            )
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def set_store_purchase_status(purchase_id: int, status: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE store_purchases SET status=? WHERE id=?",
+            (str(status), int(purchase_id))
+        )
+        await db.commit()
